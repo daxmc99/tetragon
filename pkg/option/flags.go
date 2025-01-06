@@ -117,6 +117,8 @@ const (
 	KeyEventCacheRetryDelay = "event-cache-retry-delay"
 
 	KeyCompatibilitySyscall64SizeType = "enable-compatibility-syscall64-size-type"
+
+	KeyExecveMapEntries = "execve-map-entries"
 )
 
 type UsernameMetadaCode int
@@ -250,6 +252,7 @@ func ReadAndSetFlags() error {
 
 	Config.CompatibilitySyscall64SizeType = viper.GetBool(KeyCompatibilitySyscall64SizeType)
 
+	Config.ExecveMapEntries = viper.GetString(KeyExecveMapEntries)
 	return nil
 }
 
@@ -416,4 +419,6 @@ func AddFlags(flags *pflag.FlagSet) {
 	flags.Int(KeyEventCacheRetryDelay, defaults.DefaultEventCacheRetryDelay, "Delay in seconds between event cache retries")
 
 	flags.Bool(KeyCompatibilitySyscall64SizeType, false, "syscall64 type will produce output of type size (compatibility flag, will be removed in v1.4)")
+
+	flags.String(KeyExecveMapEntries, "", "Set entries for execve_map table (default 32768)")
 }
