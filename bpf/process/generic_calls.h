@@ -56,6 +56,7 @@ generic_start_process_filter(void *ctx, struct bpf_map_def *calls)
 #endif
 
 	msg->lsm.post = false;
+	msg->common.flags = 0;
 
 	/* Tail call into filters. */
 	tail_call(ctx, calls, TAIL_CALL_FILTER);
@@ -126,7 +127,6 @@ generic_process_init(struct msg_generic_kprobe *e, u8 op, struct event_config *c
 {
 	e->common.op = op;
 
-	e->common.flags = 0;
 	e->common.pad[0] = 0;
 	e->common.pad[1] = 0;
 	e->common.size = 0;
@@ -344,10 +344,11 @@ has_action(struct selector_action *actions, __u32 idx)
 
 /* Currently supporting 2 actions for selector. */
 FUNC_INLINE bool
-do_actions(void *ctx, struct selector_action *actions)
+do_actions(void *ctx, struct selector_action *actions, unsigned long allowed)
 {
 	bool post = true;
 	__u32 l, i = 0;
+	int action;
 
 #ifndef __LARGE_BPF_PROG
 #pragma unroll
@@ -355,6 +356,9 @@ do_actions(void *ctx, struct selector_action *actions)
 	for (l = 0; l < MAX_ACTIONS; l++) {
 		if (!has_action(actions, i))
 			break;
+		action = actions->act[i];
+		if (allowed && (allowed & (1 << action)) == 0)
+			continue;
 		i = do_action(ctx, i, actions, &post);
 	}
 
@@ -368,6 +372,7 @@ generic_actions(void *ctx, struct bpf_map_def *calls)
 	struct selector_action *actions;
 	struct msg_generic_kprobe *e;
 	int actoff, pass, zero = 0;
+	unsigned long allowed = 0;
 	bool postit;
 	__u8 *f;
 
@@ -383,6 +388,12 @@ generic_actions(void *ctx, struct bpf_map_def *calls)
 	if (!f)
 		return 0;
 
+	if (e->common.flags & MSG_COMMON_FLAG_PROCESS_NOT_FOUND) {
+		allowed |= 1 << ACTION_SIGKILL;
+		allowed |= 1 << ACTION_OVERRIDE;
+		allowed |= 1 << ACTION_SIGNAL;
+	}
+
 	asm volatile("%[pass] &= 0x7ff;\n"
 		     : [pass] "+r"(pass)
 		     :);
@@ -394,7 +405,7 @@ generic_actions(void *ctx, struct bpf_map_def *calls)
 		     :);
 	actions = (struct selector_action *)&f[actoff];
 
-	postit = do_actions(ctx, actions);
+	postit = do_actions(ctx, actions, allowed);
 	if (postit)
 		tail_call(ctx, calls, TAIL_CALL_SEND);
 	return postit;
@@ -525,7 +536,7 @@ FUNC_INLINE int generic_retkprobe(void *ctx, struct bpf_map_def *calls, unsigned
 	enter = event_find_curr(&ppid, &walker);
 
 	e->common.op = MSG_OP_GENERIC_KPROBE;
-	e->common.flags |= MSG_COMMON_FLAG_RETURN;
+	e->common.flags = MSG_COMMON_FLAG_RETURN;
 	e->common.pad[0] = 0;
 	e->common.pad[1] = 0;
 	e->common.size = size;
@@ -558,7 +569,7 @@ FUNC_INLINE int generic_retkprobe(void *ctx, struct bpf_map_def *calls, unsigned
 // msg_generic_hdr structure.
 FUNC_INLINE int generic_process_filter(void)
 {
-	int selectors, pass, curr, zero = 0;
+	int selectors, pass, curr, zero = 0, i;
 	struct execve_map_value *enter;
 	struct msg_generic_kprobe *msg;
 	struct msg_execve_key *current;
@@ -570,15 +581,21 @@ FUNC_INLINE int generic_process_filter(void)
 	if (!msg)
 		return 0;
 
+	sel = &msg->sel;
+
 	enter = event_find_curr(&ppid, &walker);
-	if (!enter)
+	if (!enter) {
+		msg->common.flags |= MSG_COMMON_FLAG_PROCESS_NOT_FOUND;
+		for (i = 0; i < MAX_CONFIGURED_SELECTORS; i++)
+			msg->sel.active[i] = true;
+		sel->active[SELECTORS_ACTIVE] = true;
 		return PFILTER_CURR_NOT_FOUND;
+	}
 
 	f = map_lookup_elem(&filter_map, &msg->idx);
 	if (!f)
 		return PFILTER_ERROR;
 
-	sel = &msg->sel;
 	current = &msg->current;
 
 	curr = sel->curr;
@@ -667,6 +684,11 @@ FUNC_INLINE long generic_filter_arg(void *ctx, struct bpf_map_def *tailcalls,
 		e->pass = pass;
 		tail_call(ctx, tailcalls, TAIL_CALL_ACTIONS);
 	}
+
+	// We did not pass pid filter, but there are no actions,
+	// let's drop the event and do nothing.
+	if (e->common.flags & MSG_COMMON_FLAG_PROCESS_NOT_FOUND)
+		return 0;
 
 	tail_call(ctx, tailcalls, TAIL_CALL_SEND);
 	return 0;

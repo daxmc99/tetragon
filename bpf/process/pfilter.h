@@ -76,11 +76,11 @@ filter_pidsets(__u64 ty, __u64 flags, __u64 sel, struct execve_map_value *enter)
 
 // generic_process_filter return value
 enum {
+	PFILTER_CURR_NOT_FOUND = 4, // event_find_curr() failed
 	PFILTER_ERROR = 3, // these should never happen
 	PFILTER_CONTINUE = 2, // filter check continue
 	PFILTER_ACCEPT = 1, // filter check passed
 	PFILTER_REJECT = 0, // filter check failed
-	PFILTER_CURR_NOT_FOUND = 0, // event_find_curr() failed
 };
 
 FUNC_INLINE int
